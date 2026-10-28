@@ -150,7 +150,7 @@ export function ImageStage(props: Props) {
         style={{ ...rectToPercent(r), touchAction: 'none' }}
         className={[
           'absolute',
-          active ? 'z-10 cursor-move' : 'pointer-events-none',
+          active ? '@container z-10 cursor-move' : 'pointer-events-none',
           variant === 'hotspot'
             ? `rounded-md border-[3px] border-accent bg-accent/20 shadow-[0_0_0_2px_rgb(255_255_255/0.9)] ${active ? '' : 'opacity-60'}`
             : `bg-black outline-2 outline-dashed ${active ? 'outline-white' : 'outline-white/50'}`,
@@ -163,7 +163,9 @@ export function ImageStage(props: Props) {
               data-handle={h.id}
               onPointerDown={(e) => startResize(e, target, h.id, rect)}
               style={{ ...h.style, cursor: h.cursor, touchAction: 'none' }}
-              className="absolute size-3.5 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-white bg-accent shadow pointer-coarse:size-6"
+              className={`absolute size-3.5 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-white bg-accent shadow pointer-coarse:size-6 ${
+                h.id.length === 1 ? '@max-[96px]:hidden' : '' // small boxes keep only corner handles so the box stays visible
+              }`}
             />
           ))}
         {variant === 'hotspot' && (
