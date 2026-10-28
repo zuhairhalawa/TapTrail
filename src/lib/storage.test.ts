@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { IDBFactory } from 'fake-indexeddb';
 import {
-  closeDbForTests, deleteGuide, getGuide, getGuideImages, getImage, isQuotaError, listGuides, pruneOrphanImages, putImage,
+  addGuideWithImages, closeDbForTests, deleteGuide, getGuide, getGuideImages, getImage, isQuotaError, listGuides, pruneOrphanImages, putImage,
   saveGuide, StorageError,
 } from './storage';
 import { addStep, createGuide, createStep } from './guideOps';
@@ -96,5 +96,33 @@ describe('browser storage failures', () => {
     expect(isQuotaError(new Error('Storage quota exceeded'))).toBe(true);
     expect(isQuotaError(new Error('nope'))).toBe(false);
     expect(isQuotaError(null)).toBe(false);
+  });
+});
+describe('addGuideWithImages (atomic import write)', () => {
+  it('stores the guide and all images together', async () => {
+    let g = createGuide({ title: 'New', lang: 'en' });
+    g = addStep(g, createStep({ imageId: 'n1', width: 10, height: 20 }));
+    g = addStep(g, createStep({ imageId: 'n2', width: 10, height: 20 }));
+    await addGuideWithImages(g, [img('n1', g.id), img('n2', g.id)]);
+    expect((await getGuide(g.id))?.steps).toHaveLength(2);
+    expect((await getGuideImages(g.id)).map((i) => i.id).sort()).toEqual(['n1', 'n2']);
+  });
+
+  it('never overwrites an existing guide or image: a colliding id fails and rolls back the whole attempt', async () => {
+    const other = createGuide({ title: 'Existing', lang: 'en' });
+    await saveGuide(other);
+    await putImage({ ...img('shared', other.id), bytes: new Uint8Array([9, 9]).buffer });
+
+    // colliding image id
+    const g1 = createGuide({ title: 'Collides on image', lang: 'en' });
+    await expect(addGuideWithImages(g1, [img('fresh', g1.id), img('shared', g1.id)])).rejects.toBeInstanceOf(StorageError);
+    expect(await getGuide(g1.id)).toBeUndefined();
+    expect(await getImage('fresh')).toBeUndefined();
+    expect(new Uint8Array((await getImage('shared'))!.bytes)).toEqual(new Uint8Array([9, 9]));
+
+    // colliding guide id
+    await expect(addGuideWithImages({ ...other, title: 'Hijack' }, [img('fresh2', other.id)])).rejects.toBeInstanceOf(StorageError);
+    expect((await getGuide(other.id))?.title).toBe('Existing');
+    expect(await getImage('fresh2')).toBeUndefined();
   });
 });

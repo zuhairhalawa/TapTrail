@@ -2,7 +2,7 @@ import { expect, test } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
 import { readFileSync } from 'node:fs';
 import {
-  addScreenshots, createGuide, drag, exportHtml, exportJson, openOffline, patternPng, readExportedData, shot, writeTmp,
+  addScreenshots, createGuide, dbCounts, drag, exportHtml, exportJson, installWriteFaults, openOffline, patternPng, readExportedData, shot, writeTmp,
 } from './helpers';
 
 test.describe('project JSON export and import', () => {
@@ -289,5 +289,85 @@ test.describe('Arabic interface and RTL', () => {
     await expect(v.page.locator('.tt-progress-text')).toHaveText('الخطوة 2 من 2');
     await shot(v.page, 'exported-viewer-arabic');
     await v.context.close();
+  });
+});
+
+test.describe('project import is all-or-nothing (no orphaned images)', () => {
+  const dataUrl = (b: Buffer) => `data:image/png;base64,${b.toString('base64')}`;
+  const good = (tint: number) => dataUrl(patternPng(120, 200, tint));
+  const corrupt = () => dataUrl(Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(80, 7)]));
+  const projectFile = (name: string, images: string[]) =>
+    writeTmp(
+      name,
+      JSON.stringify({
+        format: 'taptrail-project',
+        version: 1,
+        guide: { title: 'Atomic import', description: '', lang: 'en', steps: images.map((image, i) => ({ instruction: `step ${i + 1}`, image, width: 120, height: 200, hotspot: null })) },
+      }),
+    );
+  const setWrites = (page: import('@playwright/test').Page, failFrom: number | null) =>
+    page.evaluate((n) => {
+      const w = window as unknown as { __failWrites: number | null; __writes: number };
+      w.__writes = 0;
+      w.__failWrites = n;
+    }, failFrom);
+
+  /** One unrelated guide with one image already stored; returns the DB state to compare against. */
+  async function withExistingGuide(page: import('@playwright/test').Page) {
+    await installWriteFaults(page);
+    await createGuide(page, 'Existing guide');
+    await addScreenshots(page, [writeTmp('exist.png', patternPng(200, 300))]);
+    await expect(page.getByTestId('save-status')).toHaveAttribute('data-state', 'saved');
+    const before = await dbCounts(page);
+    expect(before).toMatchObject({ guides: 1, images: 1 });
+    await page.goto('#/studio');
+    await expect(page.getByRole('link', { name: 'Existing guide', exact: true })).toBeVisible();
+    return before;
+  }
+
+  const noOrphans = (c: Awaited<ReturnType<typeof dbCounts>>) => expect(c.imageIds).toEqual(c.referencedImageIds);
+
+  test('a valid first picture followed by an undecodable one imports nothing', async ({ page }) => {
+    const before = await withExistingGuide(page);
+    await page.getByTestId('import-input').setInputFiles(projectFile('atomic-corrupt.json', [good(0), corrupt(), good(1)]));
+    await expect(page.getByRole('alert')).toContainText('could not be read');
+    await expect(page.getByRole('status')).toHaveCount(0); // never reported as imported
+    const after = await dbCounts(page);
+    expect(after).toEqual(before);
+    noOrphans(after);
+    await expect(page.getByRole('link', { name: 'Atomic import' })).toHaveCount(0);
+  });
+
+  test('storage that fills up part-way through the pictures imports nothing, and a retry works', async ({ page }) => {
+    const before = await withExistingGuide(page);
+    await setWrites(page, 1); // the 2nd write of the import (a picture) hits the quota
+    await page.getByTestId('import-input').setInputFiles(projectFile('atomic-quota.json', [good(0), good(1), good(2)]));
+    await expect(page.getByRole('alert')).toContainText('storage is full');
+    await expect(page.getByRole('status')).toHaveCount(0);
+    const failed = await dbCounts(page);
+    expect(failed).toEqual(before);
+    noOrphans(failed);
+
+    await setWrites(page, null); // space freed up
+    await page.getByTestId('import-input').setInputFiles(projectFile('atomic-quota.json', [good(0), good(1), good(2)]));
+    await expect(page.getByRole('status')).toContainText('Imported "Atomic import"');
+    const ok = await dbCounts(page);
+    expect(ok).toMatchObject({ guides: 2, images: 4 });
+    noOrphans(ok);
+    expect(ok.guideTitles).toEqual(['Atomic import', 'Existing guide']);
+  });
+
+  test('a failure saving the guide record itself leaves no pictures behind', async ({ page }) => {
+    const before = await withExistingGuide(page);
+    await setWrites(page, 2); // pictures are writes 0 and 1, the guide record is write 2
+    await page.getByTestId('import-input').setInputFiles(projectFile('atomic-guide.json', [good(0), good(1)]));
+    await expect(page.getByRole('alert')).toContainText('storage is full');
+    await expect(page.getByRole('status')).toHaveCount(0);
+    const after = await dbCounts(page);
+    expect(after).toEqual(before);
+    noOrphans(after);
+    // the existing guide still opens with its picture
+    await page.getByRole('link', { name: 'Existing guide', exact: true }).click();
+    await expect(page.getByTestId('image-stage').locator('img')).toBeVisible();
   });
 });

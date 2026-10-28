@@ -399,3 +399,93 @@ export async function studioThumbnailScenario(page: Page): Promise<void> {
   expect(centre[1], 'draft bytes still hold the unredacted original').toBeGreaterThan(200);
   expect(centre[0]).toBeLessThan(40);
 }
+
+// ---------------------------------------------------------------------------------------------
+// IndexedDB inspection / fault injection for import + autosave tests.
+// ---------------------------------------------------------------------------------------------
+
+export interface DbCounts {
+  guides: number;
+  images: number;
+  imageIds: string[];
+  referencedImageIds: string[];
+  guideTitles: string[];
+}
+
+/** Read the app database directly (read-only). */
+export function dbCounts(page: Page): Promise<DbCounts> {
+  return page.evaluate(
+    () =>
+      new Promise<DbCounts>((resolve, reject) => {
+        const open = indexedDB.open('taptrail');
+        open.onerror = () => reject(open.error);
+        open.onsuccess = () => {
+          const d = open.result;
+          const tx = d.transaction(['guides', 'images'], 'readonly');
+          const g = tx.objectStore('guides').getAll();
+          const i = tx.objectStore('images').getAll();
+          tx.oncomplete = () => {
+            d.close();
+            const guides = g.result as { title: string; steps: { imageId: string }[] }[];
+            const images = i.result as { id: string }[];
+            resolve({
+              guides: guides.length,
+              images: images.length,
+              imageIds: images.map((x) => x.id).sort(),
+              referencedImageIds: guides.flatMap((x) => x.steps.map((s) => s.imageId)).sort(),
+              guideTitles: guides.map((x) => x.title).sort(),
+            });
+          };
+          tx.onerror = () => reject(tx.error);
+        };
+      }),
+  );
+}
+
+/**
+ * Install quota-failure injection: while window.__failWrites is a number n, the (n+1)-th and every
+ * later write (put/add) on the guides/images stores throws QuotaExceededError (counted from
+ * window.__writes, which tests reset). true fails every write; null/undefined fails none.
+ * Must be called before the first goto.
+ */
+export async function installWriteFaults(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    const w = window as unknown as { __failWrites: boolean | number | null; __writes: number };
+    w.__failWrites = null;
+    w.__writes = 0;
+    for (const method of ['put', 'add'] as const) {
+      const original = IDBObjectStore.prototype[method];
+      IDBObjectStore.prototype[method] = function (this: IDBObjectStore, ...args: [unknown, IDBValidKey?]) {
+        if (this.name === 'guides' || this.name === 'images') {
+          const f = w.__failWrites;
+          if (f === true || (typeof f === 'number' && w.__writes >= f)) throw new DOMException('The quota has been exceeded.', 'QuotaExceededError');
+          w.__writes++;
+        }
+        return (original as (...a: unknown[]) => IDBRequest).apply(this, args);
+      } as typeof original;
+    }
+  });
+}
+
+/** Make saves slow: window.__holdDb(ms) keeps a read-write transaction on the stores busy from a second connection. */
+export async function installDbHold(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    (window as unknown as { __holdDb: (ms: number) => Promise<void> }).__holdDb = (ms: number) =>
+      new Promise<void>((resolve, reject) => {
+        const open = indexedDB.open('taptrail');
+        open.onerror = () => reject(open.error);
+        open.onsuccess = () => {
+          const d = open.result;
+          const tx = d.transaction(['guides', 'images'], 'readwrite');
+          const store = tx.objectStore('guides');
+          const end = performance.now() + ms;
+          const spin = () => {
+            if (performance.now() < end) store.get('__hold__').onsuccess = spin;
+          };
+          spin();
+          tx.oncomplete = () => d.close();
+          resolve();
+        };
+      });
+  });
+}

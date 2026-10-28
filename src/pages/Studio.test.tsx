@@ -9,12 +9,14 @@ import { closeDbForTests, getGuide, getImage, listGuides, putImage, saveGuide } 
 import { addStep, createGuide, createStep, updateStep } from '../lib/guideOps';
 import * as imageLib from '../lib/image';
 import type { Rect } from '../lib/types';
+import { openDB } from 'idb';
 import { stringifyProject } from '../lib/validate';
 import { fakeImageDataUrl } from '../test/fixtures';
 
 vi.mock('../lib/image', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../lib/image')>()),
   bakeRedactions: vi.fn(),
+  processUpload: vi.fn(),
 }));
 
 const ui = (openNew = false, lang: 'en' | 'ar' = 'en') => (
@@ -228,5 +230,88 @@ describe('Studio: thumbnails and pending redactions', () => {
     release({ blob: new Blob([BAKED], { type: 'image/png' }), mime: 'image/png', width: 10, height: 20 });
     await new Promise((r) => setTimeout(r, 50));
     expect([...blobs.keys()].filter((u) => !revoked.includes(u))).toEqual([]);
+  });
+});
+
+describe('Studio: importing a project is all-or-nothing', () => {
+  const projectText = (n: number) =>
+    stringifyProject({
+      title: 'Imported guide',
+      description: '',
+      lang: 'en',
+      steps: Array.from({ length: n }, (_, i) => ({ instruction: `s${i + 1}`, image: fakeImageDataUrl('png', i + 1), width: 10, height: 20, hotspot: null })),
+    });
+  const file = (n: number) => new File([projectText(n)], 'p.json', { type: 'application/json' });
+
+  const imageCount = async () => {
+    await listGuides(); // ensure schema
+    await closeDbForTests();
+    const d = await openDB('taptrail');
+    try {
+      return await d.count('images');
+    } finally {
+      d.close();
+    }
+  };
+
+  const decode = (failOn?: number) => {
+    let n = 0;
+    vi.mocked(imageLib.processUpload).mockReset();
+    vi.mocked(imageLib.processUpload).mockImplementation(async () => {
+      if (++n === failOn) throw new imageLib.ImageError('corrupt');
+      return { blob: new Blob([new Uint8Array([n, n, n, n])], { type: 'image/png' }), mime: 'image/png', width: 10, height: 20 };
+    });
+  };
+
+  afterEach(() => vi.restoreAllMocks());
+
+  it('a later picture that cannot be decoded: clear error, no success message, no stray images, existing guide intact', async () => {
+    const keep = createGuide({ title: 'Existing guide', lang: 'en' });
+    await saveGuide(keep);
+    decode(2);
+    const user = userEvent.setup({ applyAccept: false });
+    render(ui());
+    await screen.findByRole('link', { name: 'Existing guide' });
+    await user.upload(screen.getByTestId('import-input'), file(3));
+    expect(await screen.findByRole('alert')).toHaveTextContent('This image could not be read');
+    expect(screen.queryByRole('status')).toBeNull();
+    expect(await imageCount()).toBe(0);
+    expect((await listGuides()).map((g) => g.title)).toEqual(['Existing guide']);
+  });
+
+  it('a storage failure while saving: clear error, no success message, nothing stored', async () => {
+    decode();
+    const original = IDBObjectStore.prototype.add;
+    vi.spyOn(IDBObjectStore.prototype, 'add').mockImplementation(function (this: IDBObjectStore, ...args: Parameters<IDBObjectStore['add']>) {
+      if (this.name === 'guides') throw new DOMException('The quota has been exceeded.', 'QuotaExceededError');
+      return original.apply(this, args);
+    });
+    const user = userEvent.setup({ applyAccept: false });
+    render(ui());
+    await screen.findByText('No guides yet');
+    await user.upload(screen.getByTestId('import-input'), file(2));
+    expect(await screen.findByRole('alert')).toHaveTextContent('storage is full');
+    expect(screen.queryByRole('status')).toBeNull();
+    vi.restoreAllMocks();
+    expect(await imageCount()).toBe(0);
+    expect(await listGuides()).toEqual([]);
+    // the failure is recoverable: the same file imports once storage works again
+    decode();
+    await user.upload(screen.getByTestId('import-input'), file(2));
+    expect(await screen.findByRole('status')).toHaveTextContent('Imported "Imported guide".');
+    expect(await imageCount()).toBe(2);
+  });
+
+  it('reports success only after the guide and every picture are stored', async () => {
+    decode();
+    const user = userEvent.setup({ applyAccept: false });
+    render(ui());
+    await screen.findByText('No guides yet');
+    await user.upload(screen.getByTestId('import-input'), file(2));
+    expect(await screen.findByRole('status')).toHaveTextContent('Imported "Imported guide".');
+    const [g] = await listGuides();
+    expect(g?.steps).toHaveLength(2);
+    expect(await imageCount()).toBe(2);
+    expect(await screen.findByRole('link', { name: 'Imported guide' })).toBeInTheDocument();
   });
 });
