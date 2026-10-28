@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
-import { addScreenshots, createGuide, drag, exportHtml, openOffline, patternPng, shot, writeTmp } from './helpers';
+import { addScreenshots, createGuide, drag, exportHtml, openOffline, patternPng, shot, studioThumbnailScenario, writeTmp } from './helpers';
 
 const noOverflow = (page: import('@playwright/test').Page) =>
   page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
@@ -74,5 +74,9 @@ test.describe('mobile layout', () => {
     expect(navBox.height).toBeGreaterThanOrEqual(40); // comfortable touch target
     expect(v.problems).toEqual([]);
     await v.context.close();
+  });
+
+  test('studio thumbnail on a phone shows the cover painted in; the draft stays unredacted', async ({ page }) => {
+    await studioThumbnailScenario(page);
   });
 });

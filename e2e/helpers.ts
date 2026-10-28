@@ -220,3 +220,182 @@ export async function pixelAt(page: Page, dataUrl: string, nx: number, ny: numbe
     [dataUrl, nx, ny] as const,
   );
 }
+
+// ---------------------------------------------------------------------------------------------
+// Studio thumbnail (redaction) scenario, shared by the desktop/firefox/webkit and mobile specs.
+// ---------------------------------------------------------------------------------------------
+
+/** Secret block placed in the TOP of a portrait screenshot so that the cropped (object-cover/top) card thumbnail still shows it. */
+export const THUMB_SECRET = { x: 0.2, y: 0.03, w: 0.6, h: 0.1 };
+const THUMB_MARKER = { x: 0.1, y: 0.17, w: 0.3, h: 0.04 };
+
+export function thumbPng(width = 360, height = 640): Buffer {
+  return makePng(width, height, (x, y) => {
+    const nx = x / width;
+    const ny = y / height;
+    const s = THUMB_SECRET;
+    const m = THUMB_MARKER;
+    if (nx >= s.x && nx <= s.x + s.w && ny >= s.y && ny <= s.y + s.h) return [0, 255, 0];
+    if (nx >= m.x && nx <= m.x + m.w && ny >= m.y && ny <= m.y + m.h) return [255, 0, 0];
+    return [20, 30, 120];
+  });
+}
+
+/** Record every object URL the app creates/revokes so cleanup can be asserted. Call before the first goto. */
+export async function trackObjectUrls(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    const w = window as unknown as { __created: string[]; __revoked: string[] };
+    w.__created = [];
+    w.__revoked = [];
+    const create = URL.createObjectURL.bind(URL);
+    const revoke = URL.revokeObjectURL.bind(URL);
+    URL.createObjectURL = (o: Blob | MediaSource) => {
+      const u = create(o);
+      w.__created.push(u);
+      return u;
+    };
+    URL.revokeObjectURL = (u: string) => {
+      w.__revoked.push(u);
+      revoke(u);
+    };
+  });
+}
+
+export interface ThumbReport {
+  src: string;
+  natural: [number, number];
+  shown: [number, number];
+  /** Fraction of displayed (on-screen) pixels inside the cover rect that are still green. */
+  greenInCover: number;
+  /** Fraction of displayed pixels in the inner 80% of the cover rect that are (near) black. */
+  blackInCover: number;
+  outside: [number, number, number];
+  marker: [number, number, number];
+  coverVisible: boolean;
+}
+
+/**
+ * Screenshot the Studio thumbnail as the user sees it and measure the covered region in those
+ * on-screen pixels (so CSS cropping/scaling is included), not just the image bytes.
+ */
+export async function measureStudioThumbnail(page: Page, cover: { x: number; y: number; w: number; h: number }): Promise<ThumbReport> {
+  const img = page.locator('ul[aria-label] li img').first();
+  await expect(img).toBeVisible();
+  await expect.poll(() => img.evaluate((i: HTMLImageElement) => i.complete && i.naturalWidth > 0)).toBe(true);
+  await img.scrollIntoViewIfNeeded();
+  const png = await img.screenshot({ scale: 'css', animations: 'disabled' });
+  const info = await img.evaluate((i: HTMLImageElement) => ({ src: i.currentSrc, nw: i.naturalWidth, nh: i.naturalHeight, w: i.clientWidth, h: i.clientHeight }));
+  const m = await page.evaluate(
+    async ([b64, nw, nh, w, h, c, mk]) => {
+      const bmp = new Image(); // (fetch of data: URLs is blocked by the app CSP; an img element is allowed)
+      bmp.src = `data:image/png;base64,${b64}`;
+      await bmp.decode();
+      const cv = document.createElement('canvas');
+      cv.width = bmp.naturalWidth;
+      cv.height = bmp.naturalHeight;
+      const ctx = cv.getContext('2d')!;
+      ctx.drawImage(bmp, 0, 0);
+      const k = bmp.naturalWidth / (w as number); // screenshot px per CSS px (1 with scale:'css')
+      const scale = Math.max((w as number) / (nw as number), (h as number) / (nh as number)); // object-cover
+      const offX = ((w as number) - (nw as number) * scale) / 2;
+      const toX = (fx: number) => (offX + fx * (nw as number) * scale) * k;
+      const toY = (fy: number) => fy * (nh as number) * scale * k; // object-top
+      const px = (fx: number, fy: number) => {
+        const sx = Math.floor(toX(fx));
+        const sy = Math.floor(toY(fy));
+        if (sx < 0 || sy < 0 || sx >= bmp.naturalWidth || sy >= bmp.naturalHeight) return [-1, -1, -1] as [number, number, number]; // cropped out of view
+        const d = ctx.getImageData(sx, sy, 1, 1).data;
+        return [d[0]!, d[1]!, d[2]!] as [number, number, number];
+      };
+      const cc = c as { x: number; y: number; w: number; h: number };
+      const x0 = Math.floor(toX(cc.x));
+      const x1 = Math.ceil(toX(cc.x + cc.w));
+      const y0 = Math.floor(toY(cc.y));
+      const y1 = Math.ceil(toY(cc.y + cc.h));
+      const visible = x0 >= 0 && y0 >= 0 && x1 <= bmp.naturalWidth && y1 <= bmp.naturalHeight && x1 > x0 && y1 > y0;
+      let green = 0;
+      let total = 0;
+      let black = 0;
+      let innerTotal = 0;
+      if (visible) {
+        const d = ctx.getImageData(x0, y0, x1 - x0, y1 - y0).data;
+        for (let i = 0; i < d.length; i += 4) {
+          total++;
+          if (d[i + 1]! > 150 && d[i]! < 100 && d[i + 2]! < 100) green++;
+        }
+        const ix0 = x0 + Math.floor((x1 - x0) * 0.1);
+        const ix1 = x1 - Math.floor((x1 - x0) * 0.1);
+        const iy0 = y0 + Math.floor((y1 - y0) * 0.1);
+        const iy1 = y1 - Math.floor((y1 - y0) * 0.1);
+        const inner = ctx.getImageData(ix0, iy0, ix1 - ix0, iy1 - iy0).data;
+        for (let i = 0; i < inner.length; i += 4) {
+          innerTotal++;
+          if (Math.max(inner[i]!, inner[i + 1]!, inner[i + 2]!) < 20) black++;
+        }
+      }
+      const mm = mk as { x: number; y: number; w: number; h: number };
+      return {
+        coverVisible: visible,
+        greenInCover: total ? green / total : 1,
+        blackInCover: innerTotal ? black / innerTotal : 0,
+        outside: px(0.9, 0.1),
+        marker: px(mm.x + mm.w / 2, mm.y + mm.h / 2),
+      };
+    },
+    [png.toString('base64'), info.nw, info.nh, info.w, info.h, cover, THUMB_MARKER] as const,
+  );
+  return { src: info.src, natural: [info.nw, info.nh], shown: [info.w, info.h], ...m };
+}
+
+/** Pixel of the editor working image at a normalized point (tests that the draft still holds original bytes). */
+export function editorStagePixel(page: Page, nx: number, ny: number): Promise<[number, number, number]> {
+  return page.locator('[data-testid=image-stage] img').evaluate(
+    async (el, [fx, fy]) => {
+      const img = el as HTMLImageElement;
+      await img.decode();
+      const c = document.createElement('canvas');
+      c.width = img.naturalWidth;
+      c.height = img.naturalHeight;
+      const ctx = c.getContext('2d')!;
+      ctx.drawImage(img, 0, 0);
+      const d = ctx.getImageData(Math.floor(fx! * c.width), Math.floor(fy! * c.height), 1, 1).data;
+      return [d[0]!, d[1]!, d[2]!] as [number, number, number];
+    },
+    [nx, ny] as const,
+  );
+}
+
+/** The full scenario: pending redaction on step 1 -> Studio card must show covered pixels, draft must stay editable/unredacted. */
+export async function studioThumbnailScenario(page: Page): Promise<void> {
+  await trackObjectUrls(page);
+  await createGuide(page, 'Thumbnail privacy');
+  await addScreenshots(page, [writeTmp('thumb.png', thumbPng())]);
+  await page.getByRole('button', { name: 'Cover private info' }).click();
+  const s = THUMB_SECRET;
+  await drag(page, [s.x - 0.04, s.y - 0.02], [s.x + s.w + 0.04, s.y + s.h + 0.02]);
+  await expect(page.getByTestId('redaction-box')).toHaveCount(1);
+  await expect(page.getByTestId('save-status')).toHaveAttribute('data-state', 'saved');
+  const editUrl = page.url();
+
+  await page.goto('#/studio');
+  const report = await measureStudioThumbnail(page, s);
+  expect(report.src, 'thumbnail is an object URL').toMatch(/^blob:/);
+  expect(report.natural, 'thumbnail keeps the image dimensions').toEqual([360, 640]);
+  expect(report.coverVisible, 'covered region must be inside the visible thumbnail crop').toBe(true);
+  expect(report.greenInCover, 'no original (green) pixels may be visible inside the covered region of the thumbnail').toBe(0);
+  expect(report.blackInCover, 'covered region of the thumbnail is solid black').toBeGreaterThan(0.98);
+  expect(report.outside[2], 'uncovered background untouched').toBeGreaterThan(90);
+  expect(report.marker[0], 'other content untouched').toBeGreaterThan(200);
+
+  // Leaving the Studio must release the thumbnail object URL.
+  await page.goto(editUrl.slice(editUrl.indexOf('#')));
+  await expect(page.getByTestId('image-stage').locator('img')).toBeVisible();
+  const revoked = await page.evaluate((u) => (window as unknown as { __revoked: string[] }).__revoked.includes(u), report.src);
+  expect(revoked, 'thumbnail object URL revoked after leaving the Studio').toBe(true);
+
+  // The editable draft is NOT redacted: original green is still underneath, and the box is still editable.
+  await expect(page.getByTestId('redaction-box')).toHaveCount(1);
+  const centre = await editorStagePixel(page, s.x + s.w / 2, s.y + s.h / 2);
+  expect(centre[1], 'draft bytes still hold the unredacted original').toBeGreaterThan(200);
+  expect(centre[0]).toBeLessThan(40);
+}
