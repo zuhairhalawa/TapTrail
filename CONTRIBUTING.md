@@ -14,7 +14,7 @@ Thanks for helping! TapTrail aims to stay small, private and easy for non-techni
 
 ```bash
 npm install
-npx playwright install chromium   # only needed for browser tests
+npx playwright install chromium firefox webkit   # only needed for browser tests
 npm run dev                       # http://localhost:5173/TapTrail/
 ```
 
@@ -25,7 +25,7 @@ npm run typecheck
 npm run lint
 npm test              # unit + component tests (Vitest)
 npm run build
-npm run test:e2e      # builds, serves the production bundle, runs Playwright
+npm run test:e2e      # builds, serves the production bundle, runs Playwright on Chromium, Firefox, WebKit and a phone profile
 ```
 
 Add tests for behaviour you change. Security-relevant changes (import validation, export, redaction) need tests that try to break them. Do not weaken or delete a test to make it pass.
@@ -38,7 +38,7 @@ Add tests for behaviour you change. Security-relevant changes (import validation
 | `src/lib/` | Geometry, validation, image processing, storage (IndexedDB), export |
 | `src/pages/`, `src/components/` | React UI |
 | `src/i18n/` | English and Arabic strings |
-| `e2e/` | Playwright tests (desktop + mobile) |
+| `e2e/` | Playwright tests (Chromium, Firefox, WebKit, mobile) and the README screenshot script |
 
 ## Commit style
 
