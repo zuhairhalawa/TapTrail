@@ -24,7 +24,7 @@ Defences in place:
 - The CSP in exported files is delivered via a `<meta>` tag, which cannot enforce `frame-ancestors`; a hostile page could in principle embed an exported file in a frame. The file contains nothing secret.
 - Local drafts in IndexedDB contain **unredacted** originals until the user burns redactions in or deletes the guide. IndexedDB is not encrypted.
 - Redaction is manual. TapTrail never detects private information automatically.
-- Only Chromium has been tested by the automated browser tests.
+- Automated browser tests run on Playwright's Chromium, Firefox and WebKit builds (Linux in CI, Windows locally). WebKit here is Playwright's engine build, not Safari itself, and no test has run on real iOS or macOS Safari.
 
 ## Supported versions
 

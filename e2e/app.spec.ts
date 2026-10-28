@@ -74,15 +74,17 @@ test.describe('landing page and sample guide', () => {
 
   test('shows a visible focus ring on keyboard focus', async ({ page }) => {
     await page.goto('./');
+    await expect(page.getByRole('heading', { level: 1 })).toBeVisible(); // app mounted before we start tabbing
     await page.keyboard.press('Tab');
     await page.keyboard.press('Tab');
-    const outline = await page.evaluate(() => getComputedStyle(document.activeElement!).outlineStyle);
-    expect(outline).not.toBe('none');
+    const focused = await page.evaluate(() => ({ tag: document.activeElement!.tagName, outline: getComputedStyle(document.activeElement!).outlineStyle }));
+    expect(focused.tag).not.toBe('BODY'); // keyboard focus really landed on a control
+    expect(focused.outline).not.toBe('none');
   });
 });
 
 test.describe('creator studio: build a three-step guide, export it, use it offline', () => {
-  test('end to end', async ({ page, browser }) => {
+  test('end to end', async ({ page, browser, browserName }) => {
     const files = [0, 1, 2].map((i) => writeTmp(`step${i}.png`, patternPng(360, 640, i)));
     await page.goto('#/studio');
     await expect(page.getByText('No guides yet')).toBeVisible();
@@ -189,8 +191,11 @@ test.describe('creator studio: build a three-step guide, export it, use it offli
     await expect(v.locator('.tt-print')).toBeVisible();
     await expect(v.locator('.tt-main')).toBeHidden();
     await expect(v.locator('.tt-print-step')).toHaveCount(3);
-    const pdf = await v.pdf({ format: 'A4' });
-    expect(pdf.length).toBeGreaterThan(5000);
+    // page.pdf() exists only in headless Chromium (a Playwright limitation); the print layout above is checked on every engine.
+    if (browserName === 'chromium') {
+      const pdf = await v.pdf({ format: 'A4' });
+      expect(pdf.length).toBeGreaterThan(5000);
+    }
     await viewer.context.close();
   });
 });
@@ -273,7 +278,7 @@ test.describe('privacy: redaction and metadata', () => {
     await drag(page, [s.x, s.y], [s.x + s.w, s.y + s.h]);
     await expect(page.getByText('your draft here still contains the original')).toBeVisible();
     const sample = () =>
-      page.evaluate(async () => {
+      page.locator('[data-testid=image-stage] img').waitFor().then(() => page.evaluate(async () => {
         const img = document.querySelector('[data-testid=image-stage] img') as HTMLImageElement;
         await img.decode();
         const c = document.createElement('canvas');
@@ -282,7 +287,7 @@ test.describe('privacy: redaction and metadata', () => {
         const ctx = c.getContext('2d')!;
         ctx.drawImage(img, 0, 0);
         return Array.from(ctx.getImageData(Math.floor(c.width * 0.45), Math.floor(c.height * 0.46), 1, 1).data.slice(0, 3));
-      });
+      }));
     expect((await sample())[1]).toBeGreaterThan(200); // draft still green underneath
     await page.getByRole('button', { name: 'Burn covered areas into this step' }).click();
     await page.getByRole('dialog').getByRole('button', { name: 'Burn in' }).click();

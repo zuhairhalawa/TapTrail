@@ -186,6 +186,60 @@ test.describe('keyboard operation of the creator', () => {
   });
 });
 
+test.describe('pointer editing of tap areas', () => {
+  test('a hotspot can be resized by its handle, moved by dragging, and the geometry survives a reload', async ({ page }) => {
+    await createGuide(page, 'Pointer');
+    await addScreenshots(page, [writeTmp('ptr.png', patternPng(360, 640))]);
+    await drag(page, [0.1, 0.1], [0.4, 0.2]);
+    const box = page.getByTestId('hotspot-box');
+    await expect(box).toBeVisible();
+    const stage = () => page.getByTestId('image-stage').boundingBox().then((b) => b!);
+    const frac = async () => {
+      const [s, b] = [await stage(), (await box.boundingBox())!];
+      return { x: (b.x - s.x) / s.width, y: (b.y - s.y) / s.height, w: b.width / s.width, h: b.height / s.height };
+    };
+    const before = await frac();
+    expect(before.w).toBeCloseTo(0.3, 1);
+
+    // Resize: drag the south-east handle by +0.2 wide / +0.1 tall.
+    const se = box.locator('[data-handle="se"]');
+    const hb = (await se.boundingBox())!;
+    const s0 = await stage();
+    const cx = hb.x + hb.width / 2;
+    const cy = hb.y + hb.height / 2;
+    await page.mouse.move(cx, cy);
+    await page.mouse.down();
+    await page.mouse.move(cx + s0.width * 0.1, cy + s0.height * 0.05, { steps: 4 });
+    await page.mouse.move(cx + s0.width * 0.2, cy + s0.height * 0.1, { steps: 4 });
+    await page.mouse.up();
+    const resized = await frac();
+    expect(resized.w).toBeCloseTo(before.w + 0.2, 1);
+    expect(resized.h).toBeCloseTo(before.h + 0.1, 1);
+    expect(resized.x).toBeCloseTo(before.x, 2); // the opposite corner stays put
+    expect(resized.y).toBeCloseTo(before.y, 2);
+
+    // Move: drag the body of the box down by 0.3 of the image height.
+    const mb = (await box.boundingBox())!;
+    const mx = mb.x + mb.width / 2;
+    const my = mb.y + mb.height / 2;
+    await page.mouse.move(mx, my);
+    await page.mouse.down();
+    await page.mouse.move(mx, my + s0.height * 0.15, { steps: 4 });
+    await page.mouse.move(mx, my + s0.height * 0.3, { steps: 4 });
+    await page.mouse.up();
+    const moved = await frac();
+    expect(moved.y).toBeCloseTo(resized.y + 0.3, 1);
+    expect(moved.w).toBeCloseTo(resized.w, 2);
+    expect(moved.h).toBeCloseTo(resized.h, 2);
+
+    await expect(page.getByTestId('save-status')).toHaveAttribute('data-state', 'saved');
+    await page.reload();
+    await expect(box).toBeVisible();
+    const restored = await frac();
+    for (const k of ['x', 'y', 'w', 'h'] as const) expect(restored[k], k).toBeCloseTo(moved[k], 2);
+  });
+});
+
 test.describe('Arabic interface and RTL', () => {
   test('switches to Arabic with right-to-left layout and no horizontal overflow', async ({ page }) => {
     await page.goto('./');

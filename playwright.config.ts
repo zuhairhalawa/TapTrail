@@ -18,6 +18,9 @@ export default defineConfig({
   },
   projects: [
     { name: 'desktop', testIgnore: /mobile\.spec\.ts/, use: { ...devices['Desktop Chrome'], viewport: { width: 1440, height: 900 } } },
+    // Same specs, same assertions, on the other officially supported engines.
+    { name: 'firefox', testIgnore: /mobile\.spec\.ts/, use: { ...devices['Desktop Firefox'], viewport: { width: 1440, height: 900 } } },
+    { name: 'webkit', testIgnore: /mobile\.spec\.ts/, use: { ...devices['Desktop Safari'], viewport: { width: 1440, height: 900 } } },
     {
       name: 'mobile',
       use: { ...devices['Pixel 7'] },

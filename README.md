@@ -58,8 +58,9 @@ npm run preview      # http://127.0.0.1:4173/TapTrail/
 npm run typecheck
 npm run lint
 npm test                              # Vitest: unit + component tests
-npx playwright install chromium       # first time only
-npm run test:e2e                      # builds, serves, runs Playwright (desktop + mobile)
+npx playwright install chromium firefox webkit   # first time only
+npm run test:e2e                      # builds, serves, runs Playwright (Chromium, Firefox, WebKit, mobile)
+npx playwright test --project=firefox # a single engine
 ```
 
 ## Using the exported file
@@ -93,7 +94,7 @@ React 19, TypeScript (strict), Vite, Tailwind CSS v4 (`@tailwindcss/vite`), Inde
 - One rectangular hotspot per step. Rectangles only (no circles or free-form shapes).
 - Up to 60 steps per guide, 15 MB per uploaded image; images are scaled so the longest side is at most 2000 px. Large guides make large HTML files.
 - Storage is the browser's: it can be cleared by the user or by the browser when space is low. Export a project file now and then.
-- Automated browser tests run on **Chromium only**. Firefox and Safari have not been tested by me; the app uses standard APIs (IndexedDB, canvas, `<dialog>`), but treat them as unverified.
+- Automated browser tests run on Playwright's **Chromium, Firefox and WebKit** engine builds (the same 17 desktop specs on each, plus 4 phone-layout specs on emulated Chromium). WebKit is Playwright's engine build, **not Safari itself**: no test has run on real Safari, iOS or Android devices, and the phone tests are emulation. The only engine difference is PDF byte generation, which Playwright offers in Chromium only; the print layout itself is asserted on every engine.
 - Accessibility: semantic markup, visible focus, keyboard-operable hotspots, reduced-motion support and automated axe-core checks (WCAG 2 A/AA rules, serious/critical issues) pass on the main screens. This is **not** a WCAG certification and no screen-reader testing has been done.
 - The Arabic translation has not been reviewed by a native-speaking editor; corrections are welcome.
 - Screenshots are re-encoded as WebP (quality 0.92) when the browser supports it, otherwise PNG.
