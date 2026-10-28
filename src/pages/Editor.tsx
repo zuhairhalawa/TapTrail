@@ -441,7 +441,7 @@ export function Editor({ guideId }: { guideId: string }) {
         }}
       />
 
-      <div className="mt-5 grid gap-5 lg:grid-cols-[13.5rem_minmax(0,1fr)]">
+      <div className="mt-5 grid grid-cols-[minmax(0,1fr)] gap-5 lg:grid-cols-[13.5rem_minmax(0,1fr)]">
         {/* Step list */}
         <aside aria-label={t('editor.stepsHeading')}>
           <div className="mb-2 flex items-center justify-between">
@@ -520,7 +520,7 @@ export function Editor({ guideId }: { guideId: string }) {
               <p className="mt-3 text-xs text-muted">{t('editor.formats', { size: LIMITS.maxUploadBytes / 1024 / 1024 })}</p>
             </div>
           ) : (
-            <div className={`grid gap-6 xl:grid-cols-[minmax(0,1fr)_22rem] ${dragging ? 'rounded-2xl outline-2 outline-dashed outline-accent' : ''}`}>
+            <div className={`grid grid-cols-[minmax(0,1fr)] gap-6 xl:grid-cols-[minmax(0,1fr)_22rem] ${dragging ? 'rounded-2xl outline-2 outline-dashed outline-accent' : ''}`}>
               <div className="min-w-0">
                 <div className="mb-3 flex flex-wrap items-center gap-2" role="group" aria-label={t('editor.tools')}>
                   <button type="button" aria-pressed={tool === 'hotspot'} onClick={() => setTool('hotspot')} className={`${tool === 'hotspot' ? btnPrimary : btnSecondary} ${btnSmall}`}>

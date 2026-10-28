@@ -31,6 +31,20 @@ test.describe('mobile layout', () => {
     expect(s.width).toBeLessThanOrEqual(412);
   });
 
+  test('editor with many steps never widens the page (step strip scrolls on its own)', async ({ page }) => {
+    await createGuide(page, 'Many steps');
+    await addScreenshots(page, [0, 1, 2, 3, 4].map((i) => writeTmp(`many${i}.png`, patternPng(360, 640, i % 3))));
+    expect(await noOverflow(page)).toBeLessThanOrEqual(0);
+    const viewport = page.viewportSize()!;
+    const stage = (await page.getByTestId('image-stage').boundingBox())!;
+    expect(stage.x).toBeGreaterThanOrEqual(0);
+    expect(stage.x + stage.width).toBeLessThanOrEqual(viewport.width);
+    const strip = page.getByRole('list').filter({ has: page.getByTestId('step-item') });
+    expect(await strip.evaluate((el) => el.scrollWidth > el.clientWidth)).toBe(true);
+    const hint = (await page.getByText('Drag on the screenshot').boundingBox())!;
+    expect(hint.x + hint.width).toBeLessThanOrEqual(viewport.width);
+  });
+
   test('studio and editor work on a phone, and the exported guide is usable by touch', async ({ page, browser }) => {
     await page.goto('#/studio');
     expect(await noOverflow(page)).toBeLessThanOrEqual(0);

@@ -74,7 +74,7 @@ export const en = {
   'privacy.s1.title': 'What stays on your device',
   'privacy.s1.a': 'Screenshots, guides and drafts are stored in your browser using IndexedDB. They are never sent to a server.',
   'privacy.s1.b': 'There is no account, no cloud sync, no analytics and no tracking.',
-  'privacy.s1.c': 'The app works without an internet connection once it has loaded.',
+  'privacy.s1.c': 'Once this page has loaded, TapTrail does not need the internet to make a guide. Exported guide files work fully offline.',
   'privacy.s2.title': 'Hiding private information',
   'privacy.s2.a': 'Use "Cover private info" to draw solid black boxes over anything sensitive.',
   'privacy.s2.b': 'When you preview or export, the boxes are painted into the picture itself, not layered on top. The hidden pixels are not in the exported file.',
