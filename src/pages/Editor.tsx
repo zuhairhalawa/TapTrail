@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useRef, useState, type DragEvent } from 'react';
+import { useCallback, useEffect, useRef, useState, type DragEvent, type MouseEvent as ReactMouseEvent } from 'react';
 import { useI18n, viewerLabels } from '../i18n/I18n';
-import { hrefs } from '../router';
+import { hrefs, navigate } from '../router';
 import { LIMITS, type Guide, type GuideLang, type Rect, type Step } from '../lib/types';
 import {
   addRedaction, addStep, createStep, deleteStep, duplicateStep, moveStep, newId, removeRedaction,
@@ -55,6 +55,7 @@ export function Editor({ guideId }: { guideId: string }) {
   const savedRef = useRef<Guide | null>(null);
   const latestRef = useRef<Guide | null>(null);
   const savingRef = useRef(false);
+  const inflightRef = useRef<Promise<boolean> | null>(null);
   const saveStateRef = useRef<SaveState>('saved');
   const dragIndexRef = useRef<number | null>(null);
   const dragDepth = useRef(0);
@@ -104,26 +105,54 @@ export function Editor({ guideId }: { guideId: string }) {
   }, [guideId]);
 
   // ---- Autosave -----------------------------------------------------------
-  const flush = useCallback(async () => {
-    if (savingRef.current) return;
+  /**
+   * Write every pending edit. Resolves `true` only when everything the editor holds is stored, `false`
+   * if a save failed. A call made while a save is already running joins it (the running loop keeps
+   * going until nothing is left) instead of returning early, so callers can rely on the answer.
+   */
+  const flush = useCallback((): Promise<boolean> => {
+    if (savingRef.current && inflightRef.current) return inflightRef.current;
     savingRef.current = true;
-    try {
-      while (latestRef.current && latestRef.current !== savedRef.current) {
-        const g = latestRef.current;
-        setSave('saving');
-        await saveGuide(g);
-        savedRef.current = g;
-        requestPersistence();
+    const run = (async () => {
+      try {
+        while (latestRef.current && latestRef.current !== savedRef.current) {
+          const g = latestRef.current;
+          setSave('saving');
+          await saveGuide(g);
+          savedRef.current = g;
+          requestPersistence();
+        }
+        setSave('saved');
+        setSaveError(null);
+        return true;
+      } catch (e) {
+        setSave('error');
+        setSaveError(describeError(e, t));
+        return false;
+      } finally {
+        savingRef.current = false;
       }
-      setSave('saved');
-      setSaveError(null);
-    } catch (e) {
-      setSave('error');
-      setSaveError(describeError(e, t));
-    } finally {
-      savingRef.current = false;
-    }
+    })();
+    inflightRef.current = run;
+    return run;
   }, [t]);
+
+  /**
+   * Open the preview only once the latest edit is stored. Preview reads from storage, so navigating
+   * over an unsaved or still-saving edit would show stale content and, if the save then failed, would
+   * silently drop the edit. On failure we stay here: the "Not saved" banner (with retry and backup)
+   * is already showing. `onBlocked` lets a dialog close so that banner is visible.
+   */
+  const openPreview = (e: ReactMouseEvent<HTMLAnchorElement>, onBlocked?: () => void) => {
+    if (latestRef.current === savedRef.current && saveStateRef.current === 'saved') return; // nothing pending: plain link behaviour
+    e.preventDefault();
+    const plain = e.button === 0 && !e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey;
+    const target = e.currentTarget.getAttribute('href') ?? hrefs.preview(guideId);
+    void flush().then((saved) => {
+      if (!saved) onBlocked?.();
+      else if (plain) navigate(target); // a modified click (new tab) is not replayed after an async wait: click again once saved
+    });
+  };
 
   useEffect(() => {
     guideRef.current = guide;
@@ -387,7 +416,7 @@ export function Editor({ guideId }: { guideId: string }) {
           {t('editor.details')}
         </button>
         {steps.length > 0 ? (
-          <a href={hrefs.preview(guide.id)} className={btnSecondary} onClick={() => void flush()}>
+          <a href={hrefs.preview(guide.id)} className={btnSecondary} onClick={(e) => openPreview(e)}>
             <Icon name="eye" />
             {t('editor.preview')}
           </a>
@@ -709,7 +738,7 @@ export function Editor({ guideId }: { guideId: string }) {
             <div className="rounded-xl border border-line p-4">
               <h3 className="font-semibold">{t('export.printTitle')}</h3>
               <p className="mt-1 text-sm text-muted">{t('export.printText')}</p>
-              <a href={hrefs.preview(guide.id)} className={`${btnSecondary} mt-3`}>
+              <a href={hrefs.preview(guide.id)} className={`${btnSecondary} mt-3`} onClick={(e) => openPreview(e, () => setExportOpen(false))}>
                 <Icon name="printer" />
                 {t('export.printButton')}
               </a>
