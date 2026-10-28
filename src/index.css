@@ -1,0 +1,108 @@
+@import 'tailwindcss';
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface2: var(--surface2);
+  --color-line: var(--line);
+  --color-fg: var(--fg);
+  --color-muted: var(--muted);
+  --color-accent: var(--accent);
+  --color-accent-fg: var(--accent-fg);
+  --color-danger: var(--danger);
+  --color-focus: var(--focus);
+  --font-display: var(--font-display-stack);
+  --font-sans: var(--font-sans-stack);
+}
+
+:root,
+[data-theme='light'] {
+  --bg: #f4f5f0;
+  --surface: #ffffff;
+  --surface2: #eaede7;
+  --line: #d3d9d5;
+  --fg: #0e1720;
+  --muted: #465662;
+  --accent: #0f766e;
+  --accent-fg: #ffffff;
+  --danger: #b42318;
+  --focus: #0b57d0;
+  color-scheme: light;
+}
+[data-theme='dark'] {
+  --bg: #0a1017;
+  --surface: #101a24;
+  --surface2: #16222f;
+  --line: #243548;
+  --fg: #e8eef4;
+  --muted: #9db0c0;
+  --accent: #2dd4bf;
+  --accent-fg: #04201c;
+  --danger: #ff9188;
+  --focus: #8ab4ff;
+  color-scheme: dark;
+}
+:root {
+  --font-display-stack: ui-serif, 'Iowan Old Style', 'Palatino Linotype', Georgia, 'Times New Roman', serif;
+  --font-sans-stack: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, 'Noto Sans Arabic', sans-serif;
+}
+[dir='rtl'] {
+  --font-display-stack: system-ui, 'Segoe UI', Tahoma, 'Noto Sans Arabic', sans-serif;
+}
+
+html {
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-sans-stack);
+  -webkit-text-size-adjust: 100%;
+  scroll-behavior: smooth;
+}
+body {
+  min-height: 100vh;
+  min-height: 100dvh;
+  line-height: 1.55;
+}
+:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+button,
+[role='button'],
+summary {
+  cursor: pointer;
+}
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}
+.hero-glow {
+  background:
+    radial-gradient(60rem 28rem at 85% -10%, color-mix(in srgb, var(--accent) 14%, transparent), transparent 70%),
+    radial-gradient(40rem 20rem at 0% 0%, color-mix(in srgb, var(--accent) 6%, transparent), transparent 70%);
+}
+.grain-line {
+  background-image: linear-gradient(var(--line) 1px, transparent 1px);
+  background-size: 100% 2.25rem;
+}
+dialog::backdrop {
+  background: rgb(4 8 12 / 0.6);
+  backdrop-filter: blur(2px);
+}
+@media print {
+  .no-print {
+    display: none !important;
+  }
+  html,
+  body {
+    background: #fff !important;
+  }
+}
