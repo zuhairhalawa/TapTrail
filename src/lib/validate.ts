@@ -149,7 +149,7 @@ export function parseProjectText(text: string): ProjectGuideData {
 
 export function stringifyProject(guide: ProjectGuideData): string {
   return JSON.stringify(
-    { format: PROJECT_FORMAT, version: PROJECT_VERSION, app: 'TapTrail 0.1.0', guide },
+    { format: PROJECT_FORMAT, version: PROJECT_VERSION, app: 'TapTrail 0.1.1', guide },
     null,
     1,
   );

@@ -6,7 +6,7 @@ Add screenshots, draw a box around the thing to tap, write a short instruction, 
 
 ### [Try it live: zuhairhalawa.github.io/TapTrail](https://zuhairhalawa.github.io/TapTrail/)
 
-Version 0.1.0 · MIT license · runs entirely in your browser (no server, no upload, no analytics)
+Version 0.1.1 · MIT license · runs entirely in your browser (no server, no upload, no analytics)
 
 ![TapTrail landing page with a working sample guide](docs/screenshots/landing-desktop.png)
 
