@@ -1,9 +1,9 @@
-import type { Guide, GuideLang, StoredImage, ViewerData, ViewerLabels } from './types';
+import { LIMITS, type Guide, type GuideLang, type StoredImage, type ViewerData, type ViewerLabels } from './types';
 import { bakeRedactions, blobToDataUrl, dataUrlToBlob, processUpload } from './image';
 import { buildStandaloneHtml } from './exportHtml';
-import { parseProjectText, stringifyProject, validateGuideData, type ProjectGuideData } from './validate';
+import { ProjectError, parseProjectText, stringifyProject, validateGuideData, type ProjectGuideData } from './validate';
 import { createGuide, createStep, newId } from './guideOps';
-import { putImage, saveGuide } from './storage';
+import { addGuideWithImages } from './storage';
 
 type ImageLookup = (imageId: string) => Promise<StoredImage | undefined> | StoredImage | undefined;
 
@@ -52,6 +52,11 @@ export async function exportProjectFile(guide: Guide, lookup: ImageLookup): Prom
 /**
  * Turn an imported project into a stored guide. Every picture is decoded and re-encoded in
  * the browser, so a file that only pretends to be an image is rejected.
+ *
+ * All-or-nothing: pictures are processed one at a time into memory first (nothing is written yet),
+ * then the guide and all its images are stored in a single transaction. A failure at any step
+ * (decoder, quota, guide save) therefore leaves no image behind and never touches existing data,
+ * and success is only reported after the transaction has committed.
  */
 export async function importProjectText(text: string, fallbackLang: GuideLang): Promise<Guide> {
   const data = parseProjectText(text);
@@ -61,24 +66,22 @@ export async function importProjectText(text: string, fallbackLang: GuideLang): 
     lang: data.lang ?? fallbackLang,
   });
   const steps = [];
+  const images: StoredImage[] = [];
+  let heldBytes = 0; // re-encoded pictures waiting for the commit; capped so memory stays bounded
   for (const s of data.steps) {
     const processed = await processUpload(await dataUrlToBlob(s.image));
+    const bytes = await processed.blob.arrayBuffer();
+    heldBytes += bytes.byteLength;
+    if (heldBytes > LIMITS.maxImportFileBytes) throw new ProjectError('too_large', 'decoded pictures exceed the import limit');
     const imageId = newId();
-    await putImage({
-      id: imageId,
-      guideId: guide.id,
-      mime: processed.mime,
-      bytes: await processed.blob.arrayBuffer(),
-      width: processed.width,
-      height: processed.height,
-    });
+    images.push({ id: imageId, guideId: guide.id, mime: processed.mime, bytes, width: processed.width, height: processed.height });
     steps.push({
       ...createStep({ imageId, width: processed.width, height: processed.height, instruction: s.instruction }),
       hotspot: s.hotspot,
     });
   }
   guide = { ...guide, steps };
-  await saveGuide(guide);
+  await addGuideWithImages(guide, images);
   return guide;
 }
 

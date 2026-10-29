@@ -99,14 +99,18 @@ export function GuideFormDialog(props: {
   const titleId = useId();
   const descId = useId();
 
-  // Reset the fields each time the dialog is opened.
-  useEffect(() => {
+  // Start from the initial values each time the dialog is OPENED (closed -> open, or other initial values
+  // arriving while it is open). This is done while rendering, not in an effect: an effect runs after the
+  // commit, so it could overwrite what the user had already typed into the freshly shown field.
+  const [seen, setSeen] = useState({ open: props.open, t: props.initialTitle, d: props.initialDescription });
+  if (seen.open !== props.open || seen.t !== props.initialTitle || seen.d !== props.initialDescription) {
+    setSeen({ open: props.open, t: props.initialTitle, d: props.initialDescription });
     if (props.open) {
       setTitle(props.initialTitle ?? '');
       setDescription(props.initialDescription ?? '');
       setTouched(false);
     }
-  }, [props.open, props.initialTitle, props.initialDescription]);
+  }
 
   const invalid = title.trim().length === 0;
   const submit = (e: FormEvent) => {

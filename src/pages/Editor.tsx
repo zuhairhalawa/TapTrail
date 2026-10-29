@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type DragEvent } from 'react';
 import { useI18n, viewerLabels } from '../i18n/I18n';
-import { hrefs } from '../router';
+import { hrefs, parseRoute, setNavigationGuard, type PendingNavigation } from '../router';
 import { LIMITS, type Guide, type GuideLang, type Rect, type Step } from '../lib/types';
 import {
   addRedaction, addStep, createStep, deleteStep, duplicateStep, moveStep, newId, removeRedaction,
@@ -48,6 +48,8 @@ export function Editor({ guideId }: { guideId: string }) {
   const [exportOpen, setExportOpen] = useState(false);
   const [exportMsg, setExportMsg] = useState<{ kind: 'ok' | 'error'; text: string } | null>(null);
   const [exporting, setExporting] = useState<null | 'html' | 'json'>(null);
+  /** A request to leave that was stopped because the latest changes could not be saved. */
+  const [held, setHeld] = useState<PendingNavigation | null>(null);
 
   const fileRef = useRef<HTMLInputElement>(null);
   const urlsRef = useRef<string[]>([]);
@@ -55,7 +57,12 @@ export function Editor({ guideId }: { guideId: string }) {
   const savedRef = useRef<Guide | null>(null);
   const latestRef = useRef<Guide | null>(null);
   const savingRef = useRef(false);
+  const inflightRef = useRef<Promise<boolean> | null>(null);
   const saveStateRef = useRef<SaveState>('saved');
+  const navSeqRef = useRef(0); // newest navigation request wins; bumped on cancel and when this editor is left
+  const discardRef = useRef(false); // the user chose "Leave without saving": never write the pending edits
+  const retryRef = useRef<HTMLButtonElement>(null);
+  const aliveRef = useRef(true);
   const dragIndexRef = useRef<number | null>(null);
   const dragDepth = useRef(0);
 
@@ -104,30 +111,108 @@ export function Editor({ guideId }: { guideId: string }) {
   }, [guideId]);
 
   // ---- Autosave -----------------------------------------------------------
-  const flush = useCallback(async () => {
-    if (savingRef.current) return;
+  /**
+   * Write every pending edit. Resolves `true` only when everything the editor holds is stored, `false`
+   * if a save failed. A call made while a save is already running joins it (the running loop keeps
+   * going until nothing is left) instead of returning early, so callers can rely on the answer.
+   */
+  const flush = useCallback((): Promise<boolean> => {
+    if (savingRef.current && inflightRef.current) return inflightRef.current;
+    if (discardRef.current) return Promise.resolve(false); // deliberately discarded: do not persist it from the unmount cleanup either
     savingRef.current = true;
-    try {
-      while (latestRef.current && latestRef.current !== savedRef.current) {
-        const g = latestRef.current;
-        setSave('saving');
-        await saveGuide(g);
-        savedRef.current = g;
-        requestPersistence();
+    const run = (async () => {
+      try {
+        while (latestRef.current && latestRef.current !== savedRef.current && !discardRef.current) {
+          const g = latestRef.current;
+          setSave('saving');
+          await saveGuide(g);
+          savedRef.current = g;
+          requestPersistence();
+        }
+        if (discardRef.current) return false;
+        setSave('saved');
+        setSaveError(null);
+        setHeld(null);
+        return true;
+      } catch (e) {
+        setSave('error');
+        setSaveError(describeError(e, t));
+        return false;
+      } finally {
+        savingRef.current = false;
       }
-      setSave('saved');
-      setSaveError(null);
-    } catch (e) {
-      setSave('error');
-      setSaveError(describeError(e, t));
-    } finally {
-      savingRef.current = false;
-    }
+    })();
+    inflightRef.current = run;
+    return run;
   }, [t]);
 
+  /**
+   * The single policy for leaving this editor (header links, Back to guides, Preview links, browser
+   * Back/Forward): if anything is unsaved, save first and only then go. Preview reads from storage, so
+   * leaving over an unsaved or still-saving edit would show stale content and, if the save failed,
+   * silently drop the edit. On failure we stay here: the "Not saved" banner (retry, backup, and an
+   * explicit "Leave without saving") is shown and `held` remembers where the user wanted to go.
+   * Only the newest request may navigate: older ones are dropped, as are completions that arrive after
+   * the user cancelled or after this editor was left. A new-tab click (Ctrl/Cmd/Shift/Alt/middle) is
+   * never replayed after an asynchronous wait; it just triggers the save, then the user clicks again.
+   */
+  useEffect(() => {
+    aliveRef.current = true;
+    const unregister = setNavigationGuard({
+      check: (nav) => {
+        const clean = latestRef.current === savedRef.current && saveStateRef.current === 'saved';
+        if (clean || discardRef.current) return 'allow';
+        if (nav.newTab) {
+          // Another tab can only read what is stored, so only links that show THIS guide need the save first.
+          const r = parseRoute(nav.target);
+          if (!((r.name === 'preview' || r.name === 'edit') && r.id === guideId)) return 'allow';
+        }
+        const seq = ++navSeqRef.current;
+        setHeld(null);
+        void flush().then((saved) => {
+          if (seq !== navSeqRef.current) return; // superseded, cancelled, or this editor has been left
+          if (saved) nav.proceed();
+          else {
+            setExportOpen(false); // a modal dialog would hide the failure banner
+            setDetailsOpen(false);
+            if (!nav.newTab) setHeld(nav);
+          }
+        });
+        return 'hold';
+      },
+    });
+    return () => {
+      aliveRef.current = false;
+      unregister();
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- a plain counter, not a DOM node: the latest value is exactly what we want
+      navSeqRef.current++;
+    };
+  }, [flush, guideId]);
+
+  // Move keyboard focus to the first control of the failure banner when a request to leave was stopped.
+  useEffect(() => {
+    if (held) retryRef.current?.focus();
+  }, [held]);
+
+  const leaveWithoutSaving = () => {
+    if (!held || saveStateRef.current === 'saving') return; // a write that already started cannot be cancelled
+    discardRef.current = true;
+    navSeqRef.current++;
+    held.proceed();
+    // If the page somehow did not change (the destination vanished), this editor is still in use: resume saving.
+    setTimeout(() => {
+      if (aliveRef.current) discardRef.current = false;
+    }, 2000);
+  };
+
+  const keepEditing = () => {
+    navSeqRef.current++;
+    setHeld(null);
+  };
   useEffect(() => {
     guideRef.current = guide;
     if (!guide || guide === savedRef.current) return;
+    discardRef.current = false; // still editing here, so autosave must work again
     latestRef.current = guide;
     if (saveStateRef.current !== 'error') setSave('dirty');
     const timer = setTimeout(() => void flush(), 500);
@@ -139,7 +224,7 @@ export function Editor({ guideId }: { guideId: string }) {
       if (document.visibilityState === 'hidden') void flush();
     };
     const onBeforeUnload = (e: BeforeUnloadEvent) => {
-      if (saveStateRef.current !== 'saved') {
+      if (saveStateRef.current !== 'saved' && !discardRef.current) {
         void flush();
         e.preventDefault();
       }
@@ -387,7 +472,7 @@ export function Editor({ guideId }: { guideId: string }) {
           {t('editor.details')}
         </button>
         {steps.length > 0 ? (
-          <a href={hrefs.preview(guide.id)} className={btnSecondary} onClick={() => void flush()}>
+          <a href={hrefs.preview(guide.id)} className={btnSecondary}>
             <Icon name="eye" />
             {t('editor.preview')}
           </a>
@@ -403,14 +488,26 @@ export function Editor({ guideId }: { guideId: string }) {
         <div role="alert" className="mt-4 rounded-xl border border-danger bg-danger/10 p-4 text-sm">
           <p className="font-semibold">{t('editor.saveFailedTitle')}</p>
           <p className="mt-1">{saveError}</p>
+          {held && <p className="mt-1 font-medium">{t('editor.leaveHeld')}</p>}
           <div className="mt-3 flex flex-wrap gap-2">
-            <button type="button" className={`${btnSecondary} ${btnSmall}`} onClick={() => void flush()}>
+            <button ref={retryRef} type="button" className={`${btnSecondary} ${btnSmall}`} onClick={() => void flush()}>
               {t('editor.retrySave')}
             </button>
             <button type="button" className={`${btnSecondary} ${btnSmall}`} onClick={() => void runExport('json')}>
               {t('editor.downloadBackup')}
             </button>
+            {held && (
+              <>
+                <button type="button" className={`${btnSecondary} ${btnSmall}`} onClick={keepEditing}>
+                  {t('editor.keepEditing')}
+                </button>
+                <button type="button" className={`${btnDanger} ${btnSmall}`} onClick={leaveWithoutSaving}>
+                  {t('editor.leaveAnyway')}
+                </button>
+              </>
+            )}
           </div>
+          {held && <p className="mt-2 text-xs text-muted">{t('editor.leaveAnywayHint')}</p>}
         </div>
       )}
       {notices.length > 0 && (

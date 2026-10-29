@@ -2,14 +2,32 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useI18n } from '../i18n/I18n';
 import { hrefs, navigate } from '../router';
 import { createGuide } from '../lib/guideOps';
-import { LIMITS, type Guide } from '../lib/types';
+import { LIMITS, type Guide, type Step } from '../lib/types';
 import { deleteGuide, estimateStorage, getImage, listGuides, saveGuide } from '../lib/storage';
 import { importProjectText } from '../lib/projectIO';
+import { bakeRedactions } from '../lib/image';
 import { formatBytes } from '../lib/imageType';
 import { describeError } from '../components/errors';
 import { ConfirmDialog, GuideFormDialog } from '../components/Dialog';
 import { Icon } from '../components/Icon';
 import { btnGhost, btnPrimary, btnSecondary, btnSmall, card, container, eyebrow } from '../components/ui';
+
+/**
+ * The picture a card may show for a step. Pending covers are painted into a fresh copy, exactly like
+ * Preview and export do, so an unredacted screenshot is never displayed. The stored bytes (the editable
+ * draft) are only read here, never written. If covering fails we show nothing rather than the original.
+ */
+async function thumbnailBlob(step: Step): Promise<Blob | null> {
+  const img = await getImage(step.imageId);
+  if (!img) return null;
+  const stored = new Blob([img.bytes], { type: img.mime });
+  if (step.redactions.length === 0) return stored;
+  try {
+    return (await bakeRedactions(stored, step.redactions)).blob;
+  } catch {
+    return null;
+  }
+}
 
 export function Studio({ openNew }: { openNew: boolean }) {
   const { t, lang } = useI18n();
@@ -22,28 +40,41 @@ export function Studio({ openNew }: { openNew: boolean }) {
   const [renaming, setRenaming] = useState<Guide | null>(null);
   const [deleting, setDeleting] = useState<Guide | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  /** Object URLs currently shown on the cards. */
   const urlsRef = useRef<string[]>([]);
+  /** Bumped by every load and on unmount, so a superseded load can never publish or leak URLs. */
+  const loadGen = useRef(0);
 
   const load = useCallback(async () => {
+    const gen = ++loadGen.current;
+    const fresh: string[] = [];
+    const release = (urls: string[]) => urls.forEach((u) => URL.revokeObjectURL(u));
     try {
       const list = await listGuides();
+      if (gen !== loadGen.current) return;
       setGuides(list);
-      urlsRef.current.forEach((u) => URL.revokeObjectURL(u));
-      urlsRef.current = [];
       const next: Record<string, string> = {};
       for (const g of list) {
         const first = g.steps[0];
         if (!first) continue;
-        const img = await getImage(first.imageId);
-        if (img) {
-          const url = URL.createObjectURL(new Blob([img.bytes], { type: img.mime }));
-          urlsRef.current.push(url);
+        const blob = await thumbnailBlob(first);
+        if (gen !== loadGen.current) return release(fresh);
+        if (blob) {
+          const url = URL.createObjectURL(blob);
+          fresh.push(url);
           next[g.id] = url;
         }
       }
+      const usageNow = await estimateStorage();
+      if (gen !== loadGen.current) return release(fresh);
+      const old = urlsRef.current;
+      urlsRef.current = fresh;
       setThumbs(next);
-      setUsage(await estimateStorage());
+      setUsage(usageNow);
+      release(old);
     } catch (e) {
+      release(fresh);
+      if (gen !== loadGen.current) return;
       setGuides([]);
       setError(describeError(e, t));
     }
@@ -52,7 +83,12 @@ export function Studio({ openNew }: { openNew: boolean }) {
   useEffect(() => {
     void load();
     const urls = urlsRef;
-    return () => urls.current.forEach((u) => URL.revokeObjectURL(u));
+    const gen = loadGen;
+    return () => {
+      gen.current++; // invalidate any load still in flight
+      urls.current.forEach((u) => URL.revokeObjectURL(u));
+      urls.current = [];
+    };
   }, [load]);
 
   const create = async (v: { title: string; description: string }) => {

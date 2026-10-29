@@ -4,7 +4,7 @@ import { escapeHtml, serializeForHtmlScript } from './safeJson';
 import runtimeSource from '../viewer/runtime.js?raw';
 import viewerCss from '../viewer/viewer.css?raw';
 
-export const APP_VERSION = '0.1.0';
+export const APP_VERSION = '0.1.1';
 
 /** The runtime is an ES module in the app; inline it as a classic script by dropping the export line. */
 export function inlineRuntime(): string {

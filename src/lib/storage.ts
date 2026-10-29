@@ -95,6 +95,32 @@ export const getImage = (id: string): Promise<StoredImage | undefined> => run((d
 export const getGuideImages = (guideId: string): Promise<StoredImage[]> =>
   run((d) => d.getAllFromIndex('images', 'by-guide', guideId));
 
+/**
+ * Store a brand-new guide together with all of its images in ONE read-write transaction:
+ * either every row is stored or none is (any error, including a quota error that only shows up at
+ * commit time, aborts the whole transaction). `add` is used instead of `put` so an id collision
+ * fails the import instead of silently overwriting an unrelated guide or image.
+ */
+export const addGuideWithImages = (guide: Guide, images: StoredImage[]): Promise<void> =>
+  run(async (d) => {
+    const tx = d.transaction(['guides', 'images'], 'readwrite');
+    const pending: Promise<unknown>[] = [tx.done];
+    try {
+      const imageStore = tx.objectStore('images');
+      for (const img of images) pending.push(imageStore.add(img));
+      pending.push(tx.objectStore('guides').add(guide));
+      await Promise.all(pending);
+    } catch (e) {
+      try {
+        tx.abort(); // roll back every write of this attempt
+      } catch {
+        /* already finished or aborted */
+      }
+      await Promise.allSettled(pending); // observe the aborted requests so none is reported as unhandled
+      throw e;
+    }
+  });
+
 /** Delete a guide and every image that belongs to it in one transaction. */
 export const deleteGuide = (id: string): Promise<void> =>
   run(async (d) => {
