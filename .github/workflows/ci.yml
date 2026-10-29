@@ -1,16 +1,30 @@
 name: CI
 
+# One workflow verifies AND publishes, so the Pages deployment can only ever follow a complete,
+# successful verification of the very same commit (every job below checks out github.sha).
+#   - pull requests: verification only (read-only token; the deploy job is skipped).
+#   - push to main / manual run on main: verification, then deploy.
+#   - manual run on any other branch or tag: verification only.
 on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
+# Default for every job: read the repository, nothing else. Only the deploy job adds more.
 permissions:
   contents: read
 
+# Runs in the same concurrency group execute one at a time. Superseded pull-request runs are
+# cancelled; runs on main (push or manual) are not cancelled, so a verification that is about to
+# publish is not killed halfway. A newer *pending* run replaces an older pending one, and the order in
+# which runs execute is not a guarantee of commit chronology: re-running an older revision is not
+# prohibited here. What the gate guarantees is that the revision that is deployed is the revision that
+# was verified, not that an older revision can never be published later.
+# https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   check:
@@ -18,6 +32,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
       - uses: actions/setup-node@v7
         with:
           node-version: 22
@@ -30,9 +46,15 @@ jobs:
       - name: Unit and component tests
         run: npm test
       - name: Production build
-        run: npm run build
+        run: npm run build # base path is /TapTrail/ (see vite.config.ts); no secrets or API keys are used
       - name: Dependency audit (fails on known vulnerabilities)
         run: npm audit --audit-level=low
+      # The exact build that passed is what gets published (only built on main; uploading needs no extra permission).
+      - name: Package the verified build for GitHub Pages
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: dist # only the built static site
 
   e2e:
     name: Browser tests (${{ matrix.project }})
@@ -44,6 +66,8 @@ jobs:
         project: [desktop, firefox, webkit, mobile]
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
       - uses: actions/setup-node@v7
         with:
           node-version: 22
@@ -61,3 +85,23 @@ jobs:
           name: playwright-traces-${{ matrix.project }}
           path: test-results/
           retention-days: 7
+
+  deploy:
+    name: Deploy to GitHub Pages
+    # Runs only if EVERY job listed in needs succeeded. A failed, cancelled or skipped check (including any
+    # single browser matrix leg) makes this job skip, so nothing is published.
+    needs: [check, e2e]
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    # Least privilege: read the repo, publish to Pages, mint the OIDC token Pages requires. Nothing else.
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/configure-pages@v6
+      - id: deployment
+        uses: actions/deploy-pages@v5

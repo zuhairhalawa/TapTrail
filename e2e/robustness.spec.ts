@@ -317,6 +317,10 @@ test.describe('project import is all-or-nothing (no orphaned images)', () => {
     await installWriteFaults(page);
     await createGuide(page, 'Existing guide');
     await addScreenshots(page, [writeTmp('exist.png', patternPng(200, 300))]);
+    // The "Saved" label is already shown before the first autosave has run, so wait for the stored guide
+    // itself to reference the picture; otherwise the autosave lands between the snapshot and the comparison
+    // (seen on WebKit: referencedImageIds was [] in `before` and [id] in `after`).
+    await expect.poll(async () => (await dbCounts(page)).referencedImageIds.length).toBe(1);
     await expect(page.getByTestId('save-status')).toHaveAttribute('data-state', 'saved');
     const before = await dbCounts(page);
     expect(before).toMatchObject({ guides: 1, images: 1 });

@@ -1,6 +1,9 @@
 import { expect, test } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
-import { addScreenshots, createGuide, drag, exportHtml, openOffline, patternPng, shot, studioThumbnailScenario, writeTmp } from './helpers';
+import {
+  INSTRUCTION_LABEL, addScreenshots, createGuide, drag, expectHeldInEditor, exportHtml, openEditorWithStep, openOffline, patternPng, qaShot, setFailWrites, shot,
+  storedGuides, studioThumbnailScenario, writeTmp,
+} from './helpers';
 
 const noOverflow = (page: import('@playwright/test').Page) =>
   page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
@@ -79,4 +82,28 @@ test.describe('mobile layout', () => {
   test('studio thumbnail on a phone shows the cover painted in; the draft stays unredacted', async ({ page }) => {
     await studioThumbnailScenario(page);
   });
-});
+  test('failed save then "All guides" on a phone: stays with the edit, retry/backup/leave are reachable by touch, recovery works', async ({ page }) => {
+    await openEditorWithStep(page, 'Phone: failed save');
+    await setFailWrites(page, true);
+    await page.getByLabel(INSTRUCTION_LABEL).fill('Phone edit that must not vanish');
+    await expect(page.getByTestId('save-status')).toHaveAttribute('data-state', 'error');
+    await page.getByRole('link', { name: 'All guides' }).tap();
+    await expectHeldInEditor(page, 'Phone edit that must not vanish');
+    expect((await storedGuides(page))[0]?.instructions[0]).toBe('');
+    expect(await noOverflow(page)).toBeLessThanOrEqual(0);
+    const viewport = page.viewportSize()!;
+    for (const name of ['Try saving again', 'Download a backup file', 'Keep editing', 'Leave without saving']) {
+      const box = (await page.getByRole('button', { name }).boundingBox())!;
+      expect(box.x, `${name} starts inside the screen`).toBeGreaterThanOrEqual(0);
+      expect(box.x + box.width, `${name} ends inside the screen`).toBeLessThanOrEqual(viewport.width);
+      expect(box.height, `${name} is a usable touch target`).toBeGreaterThanOrEqual(28);
+    }
+    await qaShot(page, 'held-phone');
+
+    await setFailWrites(page, false);
+    await page.getByRole('button', { name: 'Try saving again' }).tap();
+    await expect(page.getByTestId('save-status')).toHaveAttribute('data-state', 'saved');
+    expect((await storedGuides(page))[0]?.instructions[0]).toBe('Phone edit that must not vanish');
+    await page.getByRole('link', { name: 'All guides' }).tap();
+    await expect(page).toHaveURL(/#\/studio$/);
+  });});

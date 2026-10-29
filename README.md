@@ -93,11 +93,11 @@ npm run test:e2e                                  # builds, serves, runs Playwri
 npx playwright test --project=firefox             # one engine (desktop, firefox, webkit, mobile)
 ```
 
-CI runs all of this on every push ([workflow](.github/workflows/ci.yml)), plus `npm audit`. The browser tests build a guide from screenshots, export it, open the exported file in a context with the network switched off, and check redaction, metadata removal, hostile text, bad files, full storage, Arabic RTL, keyboard operation, hotspot drag/resize and phone layouts.
+CI ([workflow](.github/workflows/ci.yml)) runs all of this on every pull request and every push to `main`, plus `npm audit`. The browser tests build a guide from screenshots, export it, open the exported file in a context with the network switched off, and check redaction, metadata removal, hostile text, bad files, full storage, Arabic RTL, keyboard operation, hotspot drag/resize and phone layouts.
 
 ## Deployment
 
-GitHub Pages, deployed from GitHub Actions ([workflow](.github/workflows/pages.yml)) using only `contents: read`, `pages: write` and `id-token: write`. Only the built static site (`dist/`) is published. The app uses hash routes, so reloads work without server rewrites.
+GitHub Pages, deployed from the same GitHub Actions workflow that verifies the code ([workflow](.github/workflows/ci.yml)). The `Deploy to GitHub Pages` job runs only on `main` and only after typecheck, lint, unit tests, the production build, `npm audit` and all four browser legs (desktop, Firefox, WebKit, mobile) passed for the same commit; pull requests never deploy. Only that job gets `pages: write` and `id-token: write`; everything else is `contents: read`. Only the built static site (`dist/`) is published. Details and what still has to be confirmed on GitHub: [docs/release-workflow-risk.md](docs/release-workflow-risk.md). The app uses hash routes, so reloads work without server rewrites.
 
 ## Tech
 
@@ -109,6 +109,7 @@ React 19, TypeScript (strict), Vite, Tailwind CSS v4, IndexedDB via `idb`, Vites
 - One rectangular hotspot per step. Rectangles only.
 - Up to 60 steps per guide, 15 MB per uploaded image; images are scaled so the longest side is at most 2000 px. Large guides make large HTML files.
 - Drafts live in browser storage, which the user or the browser can clear. Export a project file now and then.
+- **Unsaved changes and leaving the editor.** Edits are saved automatically. Leaving through any link in the app (header, *All guides*, Preview) or with the browser's Back/Forward button first saves pending edits; if saving fails you stay in the editor, can retry or download a backup, or explicitly choose *Leave without saving* (which discards only the unsaved changes). Closing the tab or window shows the browser's generic warning while changes are unsaved, but browsers may skip it and cannot be forced to wait for a save, so closing a tab, killing the browser or a mobile OS reclaiming the page can still lose the last unsaved edit. Opening *Preview* in a new tab (right-click, Ctrl/Cmd-click, middle-click) is only possible once your edits are saved: a new tab can read stored data only, never what is still in the editor.
 - TapTrail itself needs a connection to load. Only *exported guides* are designed to work offline; the app does not install a service worker.
 - **Browser coverage:** automated tests run on Playwright's Chromium, Firefox and WebKit builds. WebKit is Playwright's engine, **not Safari**; nothing has been tested on real Safari, iOS or Android hardware, and the phone tests are emulation. Playwright can generate PDFs only in Chromium, so PDF output is not byte-checked elsewhere (the print layout itself is checked on every engine).
 - The Arabic translation has not been reviewed by a native-speaking editor; corrections are welcome.

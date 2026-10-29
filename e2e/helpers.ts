@@ -104,8 +104,15 @@ export function writeTmp(name: string, data: Buffer | string): string {
 export async function createGuide(page: Page, title: string, description = ''): Promise<void> {
   await page.goto('#/studio/new');
   const dialog = page.getByRole('dialog');
+  // Wait for the dialog's own initialization (modal shown, name field focused and editable), then type each
+  // field exactly once. Input is never retried: if a value were lost the assertion below would fail loudly.
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByLabel('Guide name')).toBeFocused();
+  await expect(dialog.getByLabel('Guide name')).toBeEditable();
   await dialog.getByLabel('Guide name').fill(title);
   if (description) await dialog.getByLabel('Short description (optional)').fill(description);
+  await expect(dialog.getByLabel('Guide name')).toHaveValue(title);
+  if (description) await expect(dialog.getByLabel('Short description (optional)')).toHaveValue(description);
   await dialog.getByRole('button', { name: 'Create guide' }).click();
   await expect(page).toHaveURL(/#\/edit\//);
   await expect(page.getByTestId('dropzone')).toBeVisible();
@@ -467,9 +474,36 @@ export async function installWriteFaults(page: Page): Promise<void> {
   });
 }
 
-/** Make saves slow: window.__holdDb(ms) keeps a read-write transaction on the stores busy from a second connection. */
+/**
+ * Make saves slow: window.__holdDb(ms) keeps a read-write transaction on the stores busy from a second
+ * connection. window.__holdDbUntilReleased() does the same with NO timer: the hold lasts until the test
+ * calls window.__releaseDb(), so a "slow save" can be sequenced deterministically.
+ */
 export async function installDbHold(page: Page): Promise<void> {
   await page.addInitScript(() => {
+    const w = window as unknown as { __holdDbUntilReleased: () => Promise<void>; __releaseDb: () => void };
+    let released = false;
+    w.__releaseDb = () => {
+      released = true;
+    };
+    w.__holdDbUntilReleased = () => {
+      released = false;
+      return new Promise<void>((resolve, reject) => {
+        const open = indexedDB.open('taptrail');
+        open.onerror = () => reject(open.error);
+        open.onsuccess = () => {
+          const d = open.result;
+          const tx = d.transaction(['guides', 'images'], 'readwrite');
+          const store = tx.objectStore('guides');
+          const spin = () => {
+            if (!released) store.get('__hold__').onsuccess = spin;
+          };
+          spin();
+          tx.oncomplete = () => d.close();
+          resolve();
+        };
+      });
+    };
     (window as unknown as { __holdDb: (ms: number) => Promise<void> }).__holdDb = (ms: number) =>
       new Promise<void>((resolve, reject) => {
         const open = indexedDB.open('taptrail');
@@ -488,4 +522,109 @@ export async function installDbHold(page: Page): Promise<void> {
         };
       });
   });
+}
+// ---------------------------------------------------------------------------------------------
+// Navigation-guard helpers (internal exits, history, modified clicks).
+// ---------------------------------------------------------------------------------------------
+
+export interface NavLog {
+  /** location.hash after every hashchange, in order. */
+  hashes: string[];
+  /** Every click/auxclick that reached the document (after the router's capture listener ran). */
+  clicks: { type: string; button: number; ctrl: boolean; prevented: boolean; href: string | null }[];
+}
+
+/** Record hash changes and link clicks. Call before the first goto. */
+export async function installNavLog(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    const w = window as unknown as { __nav: { hashes: string[]; clicks: unknown[] } };
+    w.__nav = { hashes: [], clicks: [] };
+    window.addEventListener('hashchange', () => w.__nav.hashes.push(location.hash));
+    for (const type of ['click', 'auxclick']) {
+      document.addEventListener(type, (e) => {
+        const me = e as MouseEvent;
+        const a = (me.target as Element).closest?.('a');
+        if (a) w.__nav.clicks.push({ type, button: me.button, ctrl: me.ctrlKey, prevented: me.defaultPrevented, href: a.getAttribute('href') });
+      });
+    }
+  });
+}
+
+export const readNavLog = (page: Page): Promise<NavLog> => page.evaluate(() => (window as unknown as { __nav: NavLog }).__nav);
+
+export interface StoredGuideSummary {
+  title: string;
+  instructions: string[];
+  redactions: number;
+}
+
+/** Every stored guide, reduced to what the navigation tests assert on (read-only). */
+export function storedGuides(page: Page): Promise<StoredGuideSummary[]> {
+  return page.evaluate(
+    () =>
+      new Promise<StoredGuideSummary[]>((resolve, reject) => {
+        const open = indexedDB.open('taptrail');
+        open.onerror = () => reject(open.error);
+        open.onsuccess = () => {
+          const d = open.result;
+          const req = d.transaction('guides', 'readonly').objectStore('guides').getAll();
+          req.onsuccess = () => {
+            d.close();
+            const all = req.result as { title: string; steps: { instruction: string; redactions: unknown[] }[] }[];
+            resolve(
+              all.map((g) => ({
+                title: g.title,
+                instructions: g.steps.map((s) => s.instruction),
+                redactions: g.steps.reduce((n, s) => n + s.redactions.length, 0),
+              })),
+            );
+          };
+        };
+      }),
+  );
+}
+
+/** Screenshot for docs/qa/maintenance-final. Only written when QA_SHOTS is set, and never over docs/screenshots. */
+export async function qaShot(page: Page, name: string): Promise<void> {
+  if (!process.env.QA_SHOTS) return;
+  const dir = resolve(import.meta.dirname, '../docs/qa/maintenance-final');
+  mkdirSync(dir, { recursive: true });
+  await page.screenshot({ path: join(dir, `${name}.png`) });
+}
+/** Editor with one screenshot step, a way to fail writes, to hold the database, and a navigation log. */
+export async function openEditorWithStep(page: Page, title: string, file = 'nav.png'): Promise<void> {
+  await installWriteFaults(page);
+  await installDbHold(page);
+  await installNavLog(page);
+  await createGuide(page, title);
+  await addScreenshots(page, [writeTmp(file, patternPng(200, 300))]);
+  await expectStored(page, (gs) => gs.length > 0 && gs.every((g) => g.instructions.length > 0));
+}
+
+/**
+ * Wait until the database itself (not just the Saved label, which is shown before the first edit is
+ * noticed) holds what the test expects.
+ */
+export async function expectStored(page: Page, ok: (guides: StoredGuideSummary[]) => boolean): Promise<void> {
+  await expect.poll(async () => ok(await storedGuides(page))).toBe(true);
+  await expect(page.getByTestId('save-status')).toHaveAttribute('data-state', 'saved');
+}
+
+/** Make every guide/image write fail with a quota error (true) or work again (false). */
+export const setFailWrites = (page: Page, fail: boolean): Promise<void> =>
+  page.evaluate((v) => {
+    (window as unknown as { __failWrites: boolean | null }).__failWrites = v ? true : null;
+  }, fail);
+
+export const INSTRUCTION_LABEL = 'What should the reader do?';
+export const HELD_TEXT = 'You are still on this page because your latest changes are not saved yet.';
+
+/** The editor is still showing the unsaved edit, says so honestly, and offers recovery with focus on it. */
+export async function expectHeldInEditor(page: Page, instruction: string): Promise<void> {
+  await expect(page).toHaveURL(/#\/edit\//); // did not leave
+  await expect(page.getByTestId('save-status')).toHaveAttribute('data-state', 'error'); // never claims "saved"
+  await expect(page.getByRole('alert').filter({ hasText: 'could not be saved' })).toBeVisible();
+  await expect(page.getByText(HELD_TEXT)).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Try saving again' })).toBeFocused();
+  await expect(page.getByLabel(INSTRUCTION_LABEL)).toHaveValue(instruction);
 }
